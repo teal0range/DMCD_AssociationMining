@@ -11,18 +11,18 @@ logger = getLogger(__file__)
 class timer:
     call_level = 0
 
-    def __init__(self, log=False):
-        self.log = log
+    def __init__(self, log_level=1):
+        self.log_level = log_level
 
     def __call__(self, f):
         def inner(*args, **kwargs):
             st = time.time()
-            if self.log:
+            if self.log_level >= self.call_level:
                 logger.info("\t" * self.call_level + f"function {f.__name__} started")
             timer.call_level += 1
             _res = f(*args, **kwargs)
             timer.call_level -= 1
-            if self.log:
+            if self.log_level >= self.call_level:
                 logger.info("\t" * self.call_level + f"function {f.__name__} finished, cost {time.time() - st}s")
             return _res
 
@@ -173,20 +173,20 @@ class Apriori(Algorithm):
 class FPGrowth(Algorithm):
     class Node:
         def __init__(self, item):
-            self.item = item if item is not None else ""
-            self.count = 1
+            self.item = item
+            self.count = 0
             self.child = {}
             self.father = None
 
-        def increment(self):
-            self.count += 1
+        def increment(self, number_incr=1):
+            self.count += number_incr
             return self
 
-        def addChild(self, node):
+        def addChild(self, node, weight=1):
             if node.item not in self.child:
                 self.child[node.item] = node
                 self.child[node.item].setFather(self)
-            node.increment()
+            node.increment(weight)
             return node
 
         def setFather(self, node):
@@ -202,36 +202,75 @@ class FPGrowth(Algorithm):
             return self.item
 
     class Tree:
-        def __init__(self, dataset, support, confidence):
+        def __init__(self, dataset, support, confidence, count):
             self.itemsMapper = defaultdict(lambda: [])
-            self.count = len(dataset)
+            self.count = count
             self.support = support
             self.confidence = confidence
-            self.root = self.constructTree(dataset)
+            if len(dataset) == 0:
+                self.root = None
+            else:
+                self.root = self.constructTree(dataset)
 
+        @timer()
         def constructTree(self, dataset):
             root = FPGrowth.Node(None)
             counter = defaultdict(lambda: 0)
-            for data in dataset:
+            for data, weight in dataset.items():
                 for item in data:
-                    counter[item] += 1
+                    counter[item] += weight
             counter = {key: val for key, val in counter.items() if val > self.support * self.count}
             candidates = set(counter.keys())
             last_node = root
-            for data in dataset:
-                data = sorted(data)
+            for data, weight in dataset.items():
                 for item in data:
                     if item in candidates:
                         node = last_node.getChild(item)
                         if node is None:
                             node = FPGrowth.Node(item)
                             self.itemsMapper[item].append(node)
-                        last_node = last_node.addChild(node)
+                        last_node = last_node.addChild(node, weight)
                 last_node = root
             return root
 
+    @timer()
     def run(self, dataset):
-        return FPGrowth.Tree(dataset, self.support, self.confidence)
+        self.count = len(dataset)
+        self.associationMiner = AssociationRuleMiner(self.support, self.confidence, self.count)
+        dataset_counter = defaultdict(lambda: 0)
+        for data in dataset:
+            dataset_counter[tuple(sorted(data))] += 1
+        dataset = dataset_counter
+        self.findPattern(dataset, self.itemsetCount)
+        self.associationMiner.association_rules(list(self.itemsetCount.keys()), self.itemsetCount)
+
+    @staticmethod
+    def traceItemsetChain(tree: Tree, item):
+        chain = {}
+        for node in tree.itemsMapper[item]:
+            count = node.count
+            node = node.father
+            itemChain = []
+            while node.item is not None:
+                itemChain.append(node.item)
+                node = node.father
+            chain[tuple(reversed(itemChain))] = count
+        return chain
+
+    def findPattern(self, dataset, res=None, record=None):
+        if res is None:
+            res = {}
+        if record is None:
+            record = set()
+        tree = FPGrowth.Tree(dataset, self.support, self.confidence, self.count)
+        if tree.root is None:
+            return
+        items = sorted(tree.itemsMapper.keys())
+        for item in items:
+            _record = record.copy()
+            _record.update({item})
+            res[tuple(sorted(_record))] = sum([node.count for node in tree.itemsMapper[item]])
+            self.findPattern(FPGrowth.traceItemsetChain(tree, item), res, _record)
 
 
 class AssociationRuleMiner:
@@ -265,15 +304,18 @@ class AssociationRuleMiner:
                 known_freq = itemsetCount[opposite_set] / self.count
                 if confidence > self.confidence and confidence / known_freq > 1:
                     rules.append([subset, opposite_set, confidence])
-        rules = sorted(rules, key=lambda x: x[2], reverse=True)
-        for rule in rules[:2000]:
+        rules = sorted(sorted(rules, key=lambda x: x[0]), key=lambda x: x[2], reverse=True)
+        for rule in rules[:10]:
             print(",".join(rule[0]), " -> ", ",".join(rule[1]), rule[2])
+        # print(len(rules))
         return rules
 
 
 if __name__ == '__main__':
-    # Dummy(0.01, 0.3).run(GroceryReader().read())
+    Dummy(0.01, 0.3).run(UnixReader().read())
+    print("\n")
     Apriori(0.01, 0.3).run(UnixReader().read())
-    # FPGrowth(0.01, 0.3).run(GroceryReader().read())
+    print("\n")
+    FPGrowth(0.01, 0.3).run(UnixReader().read())
     # for item in Apriori.generateSubset([1, 2, 3, 4]):
     #     print(item)
