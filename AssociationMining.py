@@ -1,30 +1,42 @@
-from abc import abstractmethod
-from collections import defaultdict
 import time
-import numpy as np
+import sys
+import traceback
+
 from FormatReader import *
-import os
 from utils import *
 
 logger = getLogger(__file__)
 
 
-def timer(f):
-    def inner(*args, **kwargs):
-        st = time.time()
-        _res = f(*args, **kwargs)
-        logger.info(f"function {f.__name__} cost {time.time() - st}s")
-        return _res
+class timer:
+    call_level = 0
 
-    inner.__name__ = f.__name__
-    return inner
+    def __init__(self, log = False):
+        self.log = log
+
+    def __call__(self, f):
+        def inner(*args, **kwargs):
+            st = time.time()
+            if self.log:
+                logger.info("\t" * self.call_level + f"function {f.__name__} started")
+            timer.call_level += 1
+            _res = f(*args, **kwargs)
+            timer.call_level -= 1
+            if self.log:
+                logger.info("\t" * self.call_level + f"function {f.__name__} finished, cost {time.time() - st}s")
+            return _res
+
+        inner.__name__ = f.__name__
+        return inner
 
 
 class Algorithm:
     def __init__(self, support, confidence):
         self.support = support
         self.confidence = confidence
+        self.itemsetCount = {}
         self.count = None
+        self.associationMiner = None
 
     @abstractmethod
     def run(self, dataset):
@@ -32,63 +44,131 @@ class Algorithm:
 
 
 class Dummy(Algorithm):
-
-    def run(self, dataset):
-        pass
-
-
-class Apriori(Algorithm):
-
+    @timer()
     def run(self, dataset):
         self.count = len(dataset)
-        genCount, dataset = self.init_generation(dataset)
+        self.associationMiner = AssociationRuleMiner(self.support, self.confidence, self.count)
+        genCount = self.init_generation(dataset)
+        self.itemsetCount.update(genCount)
         while len(genCount) != 0:
-            genCount, dataset = self.iteration(dataset, genCount)
+            genCount = self.iteration(dataset, genCount)
+            self.itemsetCount.update(genCount)
+            self.associationMiner.association_rules(list(genCount.keys()), self.itemsetCount)
+        print("\n")
 
-    @timer
+    @timer()
     def iteration(self, dataset, genCount):
-        gen = self.prune(list(genCount.keys()))
-        genCount, dataset = self.countFreq(gen, dataset)
-        return genCount, dataset
+        candidate = self.brute_force(list(genCount.keys()))
+        genCount = self.countFreq(candidate, dataset)
+        return genCount
 
-    @timer
+    @timer()
     def init_generation(self, dataset):
         genCount = defaultdict(lambda: 0)
-        next_dataset = set()
-        cnt = 0
         for idx, itemset in enumerate(dataset):
             for item in itemset:
                 genCount[(item,)] += 1
-                cnt += 1
-                if genCount[(item,)] > self.count * self.support:
-                    next_dataset.add(idx)
-        next_dataset = [set(dataset[idx]) for idx in next_dataset]
+        genCount = {key: val for key, val in genCount.items() if val > self.count * self.support}
+        return genCount
+
+    @staticmethod
+    @timer()
+    def brute_force(genCount):
+        next_gen = []
+        items = set([_ for gen in genCount for _ in gen])
+        for candidate in genCount:
+            for item in items:
+                if item > candidate[-1]:
+                    next_gen.append(tuple(candidate) + tuple([item]))
+        return sorted(set(next_gen))
+
+    @timer()
+    def countFreq(self, candidates, dataset):
+        genCount = defaultdict(lambda: 0)
+        for itemset in candidates:
+            item_tuple = tuple(itemset)
+            item_set = set(itemset)
+            for idx, data in enumerate(dataset):
+                if item_set <= data:
+                    genCount[item_tuple] += 1
+        genCount = {key: val for key, val in genCount.items() if val > self.count * self.support}
+        return genCount
+
+
+class Apriori(Algorithm):
+    @timer()
+    def run(self, dataset):
+        self.count = len(dataset)
+        self.associationMiner = AssociationRuleMiner(self.support, self.confidence, self.count)
+        genCount, dataset = self.init_generation(dataset)
+        self.itemsetCount.update(genCount)
+        while len(genCount) != 0:
+            genCount, dataset = self.iteration(dataset, genCount)
+            self.itemsetCount.update(genCount)
+            self.associationMiner.association_rules(list(genCount.keys()), self.itemsetCount)
+
+    @timer()
+    def iteration(self, dataset, genCount):
+        candidate = self.prune(sorted(list(genCount.keys())))
+        genCount, dataset = self.countFreq(candidate, dataset)
+        return genCount, dataset
+
+    @timer()
+    def init_generation(self, dataset):
+        genCount = defaultdict(lambda: 0)
+        next_dataset = set()
+        for idx, itemset in enumerate(dataset):
+            for item in itemset:
+                genCount[(item,)] += 1
+                next_dataset.add(idx)
+        next_dataset = [dataset[idx] for idx in next_dataset]
         genCount = {key: val for key, val in genCount.items() if val > self.count * self.support}
         return genCount, next_dataset
 
-    def countFreq(self, gen, dataset):
+    @timer()
+    def countFreq(self, candidates, dataset):
         genCount = defaultdict(lambda: 0)
         next_dataset = set()
-        for itemset in gen:
+        for itemset in candidates:
+            item_tuple = tuple(itemset)
+            item_set = set(itemset)
             for idx, data in enumerate(dataset):
-                if set(itemset) <= data:
-                    genCount[tuple(itemset)] += 1
-                    if genCount[tuple(itemset)] > self.count * self.support:
-                        next_dataset.add(idx)
+                if item_set <= data:
+                    genCount[item_tuple] += 1
+                    next_dataset.add(idx)
         next_dataset = [dataset[idx] for idx in next_dataset]
         genCount = {key: val for key, val in genCount.items() if val > self.count * self.support}
         return genCount, next_dataset
 
     @staticmethod
+    @timer()
     def prune(freq_set):
         nextGen = set()
         # nextGenCount = defaultdict(lambda: 0)
-        for item_setx in freq_set:
-            for item_sety in freq_set:
-                isEqual = [item_sety[i] == item_sety[i] for i in range(len(item_setx))]
-                if np.prod(isEqual[:-1]) and item_setx[-1] < item_sety[-1]:
+        for idx, item_setx in enumerate(freq_set):
+            for item_sety in freq_set[idx + 1:]:
+                flag = True
+                for i in range(len(item_setx) - 2, -1, -1):
+                    if item_setx[i] != item_sety[i]:
+                        flag = False
+                        break
+                if flag:
                     nextGen.add(item_setx + (item_sety[-1],))
-        return nextGen
+        nextGen = Apriori.has_infrequent_subset(nextGen, set(freq_set))
+        return sorted(nextGen)
+
+    @staticmethod
+    def has_infrequent_subset(candidates, frequent):
+        res = []
+        for candidate in candidates:
+            flag = True
+            for i in range(len(candidate)):
+                if candidate[:i] + candidate[i + 1:] not in frequent:
+                    flag = False
+                    break
+            if flag:
+                res.append(candidate)
+        return res
 
 
 class FPGrowth(Algorithm):
@@ -97,5 +177,44 @@ class FPGrowth(Algorithm):
         pass
 
 
+class AssociationRuleMiner:
+    def __init__(self, support, confidence, count):
+        self.support = support
+        self.confidence = confidence
+        self.count = count
+
+    def generateSubset(self, candidates, depth=0, record=None):
+        if record is None:
+            record = []
+        if depth == len(candidates):
+            if len(record) != 0 and len(record) != len(candidates):
+                subset = tuple(sorted(list(record)))
+                oppo_subset = tuple(sorted(list(set(candidates).difference(set(record)))))
+                # if subset in self.itemsetCount and oppo_subset in self.itemsetCount:
+                yield subset, oppo_subset
+            return
+        for _ in self.generateSubset(candidates, depth + 1, record=record + [candidates[depth]]):
+            yield _
+        for _ in self.generateSubset(candidates, depth + 1, record=record):
+            yield _
+
+    @timer()
+    def association_rules(self, k_candidates, itemsetCount):
+        rules = []
+        for k_candidate in k_candidates:
+            candidate_count = itemsetCount[k_candidate]
+            for subset, opposite_set in self.generateSubset(k_candidate):
+                confidence = candidate_count / itemsetCount[subset]
+                known_freq = itemsetCount[opposite_set] / self.count
+                if confidence > self.confidence and confidence / known_freq > 1:
+                    rules.append([subset, opposite_set, confidence])
+        rules = sorted(rules, key=lambda x: x[2], reverse=True)
+        print(rules[:10])
+        return rules
+
+
 if __name__ == '__main__':
-    Apriori(0.01, 0.2).run(UnixReader().read())
+    Dummy(0.01, 0.3).run(GroceryReader().read())
+    Apriori(0.01, 0.3).run(GroceryReader().read())
+    # for item in Apriori.generateSubset([1, 2, 3, 4]):
+    #     print(item)
