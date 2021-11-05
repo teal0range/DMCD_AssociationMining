@@ -11,7 +11,7 @@ logger = getLogger(__file__)
 class timer:
     call_level = 0
 
-    def __init__(self, log = False):
+    def __init__(self, log=False):
         self.log = log
 
     def __call__(self, f):
@@ -53,8 +53,7 @@ class Dummy(Algorithm):
         while len(genCount) != 0:
             genCount = self.iteration(dataset, genCount)
             self.itemsetCount.update(genCount)
-            self.associationMiner.association_rules(list(genCount.keys()), self.itemsetCount)
-        print("\n")
+        self.associationMiner.association_rules(list(self.itemsetCount.keys()), self.itemsetCount)
 
     @timer()
     def iteration(self, dataset, genCount):
@@ -105,7 +104,7 @@ class Apriori(Algorithm):
         while len(genCount) != 0:
             genCount, dataset = self.iteration(dataset, genCount)
             self.itemsetCount.update(genCount)
-            self.associationMiner.association_rules(list(genCount.keys()), self.itemsetCount)
+        self.associationMiner.association_rules(list(self.itemsetCount.keys()), self.itemsetCount)
 
     @timer()
     def iteration(self, dataset, genCount):
@@ -172,9 +171,67 @@ class Apriori(Algorithm):
 
 
 class FPGrowth(Algorithm):
+    class Node:
+        def __init__(self, item):
+            self.item = item if item is not None else ""
+            self.count = 1
+            self.child = {}
+            self.father = None
+
+        def increment(self):
+            self.count += 1
+            return self
+
+        def addChild(self, node):
+            if node.item not in self.child:
+                self.child[node.item] = node
+                self.child[node.item].setFather(self)
+            node.increment()
+            return node
+
+        def setFather(self, node):
+            self.father = node
+
+        def getChild(self, item):
+            if item in self.child:
+                return self.child[item]
+            else:
+                return None
+
+        def __str__(self):
+            return self.item
+
+    class Tree:
+        def __init__(self, dataset, support, confidence):
+            self.itemsMapper = defaultdict(lambda: [])
+            self.count = len(dataset)
+            self.support = support
+            self.confidence = confidence
+            self.root = self.constructTree(dataset)
+
+        def constructTree(self, dataset):
+            root = FPGrowth.Node(None)
+            counter = defaultdict(lambda: 0)
+            for data in dataset:
+                for item in data:
+                    counter[item] += 1
+            counter = {key: val for key, val in counter.items() if val > self.support * self.count}
+            candidates = set(counter.keys())
+            last_node = root
+            for data in dataset:
+                data = sorted(data)
+                for item in data:
+                    if item in candidates:
+                        node = last_node.getChild(item)
+                        if node is None:
+                            node = FPGrowth.Node(item)
+                            self.itemsMapper[item].append(node)
+                        last_node = last_node.addChild(node)
+                last_node = root
+            return root
 
     def run(self, dataset):
-        pass
+        return FPGrowth.Tree(dataset, self.support, self.confidence)
 
 
 class AssociationRuleMiner:
@@ -209,12 +266,14 @@ class AssociationRuleMiner:
                 if confidence > self.confidence and confidence / known_freq > 1:
                     rules.append([subset, opposite_set, confidence])
         rules = sorted(rules, key=lambda x: x[2], reverse=True)
-        print(rules[:10])
+        for rule in rules[:2000]:
+            print(",".join(rule[0]), " -> ", ",".join(rule[1]), rule[2])
         return rules
 
 
 if __name__ == '__main__':
-    Dummy(0.01, 0.3).run(GroceryReader().read())
-    Apriori(0.01, 0.3).run(GroceryReader().read())
+    # Dummy(0.01, 0.3).run(GroceryReader().read())
+    Apriori(0.01, 0.3).run(UnixReader().read())
+    # FPGrowth(0.01, 0.3).run(GroceryReader().read())
     # for item in Apriori.generateSubset([1, 2, 3, 4]):
     #     print(item)

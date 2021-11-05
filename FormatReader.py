@@ -37,7 +37,8 @@ class UnixReader(FormatReader):
                         if len(container) != 0:
                             result.append(container.copy())
                     else:
-                        container.add(line)
+                        if re.match(r"<[0-9]*>", line) is None:
+                            container.add(line)
                     line = fp.readline().strip()
         return [set(items) for items in result]
 
